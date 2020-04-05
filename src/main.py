@@ -1,99 +1,134 @@
 # coding: utf-8
 
 import json
+import os
 import os.path
-import skvideo.io
 import supervisely_lib as sly
 
-from PIL import Image as pil_image
+import numpy as np
+from numpy import random
+import skimage as ski
+from skimage import io
 
-import dhash
+AXIS = 'axis'
+SIZE = 'size'
+MODE = 'mode'
+OVERLAP = 'overlap'
+NUMBER_SAMPLE = 'n_sample'
 
-DEFAULT_STEP = 25
-STEP = 'step'
-START_FRAME = 'start_frame'
-END_FRAME = 'end_frame'
-SKIP_FRAMES = 'skip_frames'
-DHASH_MIN_HAMMING_DISTANCE = 'dhash_min_hamming_distance'
+DEFAULT_AXIS = [0]
+DEFAULT_SIZE = [256, 256]
+DEFAULT_MODE = 'sliding_window'
+DEFAULT_OVERLAP = 10
+DEFAULT_N_SAMPLE = 100
 
+# Do NOT use directly for video extension validation. Use is_valid_ext() /  has_valid_ext() below instead.
+ALLOWED_CT_EXTENSION = ['.tiff']
 
-def convert_video():
+def is_valid_ext(ext: str) -> bool:
+    return ext.lower() in ALLOWED_CT_EXTENSION
+
+def has_valid_ext(path: str) -> bool:
+    return is_valid_ext(os.path.splitext(path)[1])
+
+def sliding_window(im, size, overlap, axes):
+    shape = im.shape
+    
+    ls_im = []
+
+    for axis in axes:
+        for i in range(shape[axes]):
+            sub_im = np.take(im, i, axis)
+
+            Nj, Nk = shape[:axis], shape[axis+1:]
+            for j in range(0, Nj, size[0] - overlap):
+                for k in range(0, Nk, size[1] - overlap):
+                    ss_im = sub_im[j:j+size[0], k, k+size[1]]
+                    ls_im.append(ss_im)
+    
+    return ls_im
+
+def random_sampling(im, size, number, axes, seed = None):
+    if(seed is not None):
+        random.seed(seed)
+    
+    ls_im = []
+
+    for _ in number:
+        axis = random.choice(axes)
+        Nj, Nk = im.shape[:axis], im.shape[axis+1:]
+
+        i = random.randint(0, im.shape[axis])
+        j = random.randint(0, Nj - size[0])
+        k = random.randint(0, Nk - size[1])
+
+        sub_im = np.take(im, i, axis)[j:j+size[0], k:k+size[1]]
+        ls_im.append(sub_im)
+    
+    return ls_im
+
+def convert_ct_im():
     task_settings = json.load(open(sly.TaskPaths.TASK_CONFIG_PATH, 'r'))
 
     convert_options = task_settings['options']
 
-    step = convert_options.get(STEP)
-    if step is not None:
-        step = int(step)
+    mode = convert_options.get(MODE)
+    if mode is not None:
+        mode = str(mode)
     else:
-        sly.logger.warning('step parameter not found. set to default: {}'.format(DEFAULT_STEP))
-        step = DEFAULT_STEP
+        sly.logger.warning('axis parameter not found. set to default: {}'.format(DEFAULT_MODE))
+        mode = DEFAULT_MODE
 
-    start_frame = convert_options.get(START_FRAME, 0)
-    end_frame = convert_options.get(END_FRAME, float('Inf'))
-    skip_frames = set(convert_options.get(SKIP_FRAMES, []))
-    dhash_min_hamming_distance = convert_options.get(DHASH_MIN_HAMMING_DISTANCE, 0)
+    axis = set(convert_options.get(AXIS, [0]))
+    size = set(convert_options.get(SIZE, DEFAULT_SIZE))
 
     paths = sly.fs.list_files(sly.TaskPaths.DATA_DIR)
-    video_paths = []
+    tiff_paths = []
     for path in paths:
-        if sly.video.has_valid_ext(path):
-            video_paths.append(path)
+        if has_valid_ext(path):
+            tiff_paths.append(path)
         else:
-            sly.logger.warning("Video file '{}' has unsupported extension. Skipped. Supported extensions: {}"
-                               .format(path, sly.video.ALLOWED_VIDEO_EXTENSIONS))
+            sly.logger.warning("CT file '{}' has unsupported extension. Skipped. Supported extensions: {}"
+                               .format(path, ALLOWED_CT_EXTENSION))
 
-    if len(video_paths) == 0:
-        raise RuntimeError("Videos not found!")
+    if len(tiff_paths) == 0:
+        raise RuntimeError("Image not found!")
 
     project_dir = os.path.join(sly.TaskPaths.RESULTS_DIR, task_settings['res_names']['project'])
     project = sly.Project(directory=project_dir, mode=sly.OpenMode.CREATE)
-    for video_path in video_paths:
+    for im_path in tiff_paths:
         try:
-            video_relpath = os.path.relpath(video_path, sly.TaskPaths.DATA_DIR)
+            video_relpath = os.path.relpath(im_path, sly.TaskPaths.DATA_DIR)
             ds_name = video_relpath.replace('/', '__')
             ds = project.create_dataset(ds_name=ds_name)
 
-            vreader = skvideo.io.FFmpegReader(video_path)
+            raw_image = io.imread(im_path) 
 
-            vlength = vreader.getShape()[0]
-            progress = sly.Progress('Import video: {}'.format(ds_name), vlength)
+            if(mode == 'sliding_window'):
+                overlap = convert_options.get(OVERLAP, DEFAULT_OVERLAP)
+                ls_im = sliding_window(raw_image, size, overlap, axis)
+            elif(mode == 'random'):
+                number_sample = convert_options.get(NUMBER_SAMPLE, DEFAULT_N_SAMPLE)
+                ls_im = random_sampling(raw_image, size, number_sample, axis)
+            else:
+                raise RuntimeError("mode not implemented")
 
-            prev_dhash = None
-
-            for frame_id, image in enumerate(vreader.nextFrame()):
-                if ((start_frame <= frame_id) and (frame_id <= end_frame or end_frame < 0)
-                        and ((frame_id - start_frame) % step == 0)
-                        and frame_id not in skip_frames):
-
-                    # Only keep track of dhash values if the filtering is actually enabled.
-                    if dhash_min_hamming_distance > 0:
-                        curr_dhash = dhash.dhash_int(pil_image.fromarray(image))
-                        dhash_distance = None
-                        if prev_dhash is not None:
-                            dhash_distance = dhash.get_num_bits_different(curr_dhash, prev_dhash)
-                            sly.logger.info('Frame {}. dHash Hamming distance to previously imported frame: {}'.format(
-                                frame_id, dhash_distance))
-
-                        if dhash_distance is not None and dhash_distance < dhash_min_hamming_distance:
-                            continue
-                        # Only update the prev_dhash value if we are going to actually import this frame.
-                        prev_dhash = curr_dhash
-
-                    img_name = "frame_{:05d}".format(frame_id)
-                    ds.add_item_np(img_name + '.png', image)
+            progress = sly.Progress('Import image: {}'.format(ds_name), len(ls_im))
+            for frame_id, image in enumerate(ls_im):
+                img_name = "frame_{:05d}".format(frame_id)
+                ds.add_item_np(img_name + '.png', image)
                 progress.iter_done_report()
 
         except Exception as e:
             exc_str = str(e)
-            sly.logger.warn('Input video skipped due to error: {}'.format(exc_str), exc_info=True, extra={
+            sly.logger.warn('Input tiff skipped due to error: {}'.format(exc_str), exc_info=True, extra={
                 'exc_str': exc_str,
-                'video_file': video_path,
+                'video_file': im_path,
             })
 
 
 def main():
-    convert_video()
+    convert_ct_im()
     sly.report_import_finished()
 
 

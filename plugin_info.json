@@ -1,5 +1,5 @@
 {
-	"title": "Video",
-	"description": "For each video will be created separate dataset. Frames are extracted with specific step.",
+	"title": "ct image import",
+	"description": "each ct file file is separated into 1 dataset",
 	"type": "import"
 }
