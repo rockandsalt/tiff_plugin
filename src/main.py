@@ -32,18 +32,19 @@ def has_valid_ext(path: str) -> bool:
     return is_valid_ext(os.path.splitext(path)[1])
 
 def sliding_window(im, size, overlap, axes):
-    shape = im.shape
-    
+    shape = list(im.shape)
+
     ls_im = []
 
     for axis in axes:
-        for i in range(shape[axes]):
+        t_shape = shape.copy()
+        t_shape.pop(axis)
+        for i in range(shape[axis]):
             sub_im = np.take(im, i, axis)
 
-            Nj, Nk = shape[:axis], shape[axis+1:]
-            for j in range(0, Nj, size[0] - overlap):
-                for k in range(0, Nk, size[1] - overlap):
-                    ss_im = sub_im[j:j+size[0], k, k+size[1]]
+            for j in range(0, t_shape[0], size[0] - overlap):
+                for k in range(0, t_shape[1], size[1] - overlap):
+                    ss_im = sub_im[j:j+size[0], k:k+size[1]]
                     ls_im.append(ss_im)
     
     return ls_im
@@ -54,13 +55,16 @@ def random_sampling(im, size, number, axes, seed = None):
     
     ls_im = []
 
+    shape = list(im.shape)
+
     for _ in number:
         axis = random.choice(axes)
-        Nj, Nk = im.shape[:axis], im.shape[axis+1:]
+        t_shape = shape.copy()
+        t_shape.pop(axis)
 
         i = random.randint(0, im.shape[axis])
-        j = random.randint(0, Nj - size[0])
-        k = random.randint(0, Nk - size[1])
+        j = random.randint(0, t_shape[0] - size[0])
+        k = random.randint(0, t_shape[1] - size[1])
 
         sub_im = np.take(im, i, axis)[j:j+size[0], k:k+size[1]]
         ls_im.append(sub_im)
@@ -79,7 +83,7 @@ def convert_ct_im():
         sly.logger.warning('axis parameter not found. set to default: {}'.format(DEFAULT_MODE))
         mode = DEFAULT_MODE
 
-    axis = set(convert_options.get(AXIS, [0]))
+    axis = set(convert_options.get(AXIS, DEFAULT_AXIS))
     size = set(convert_options.get(SIZE, DEFAULT_SIZE))
 
     paths = sly.fs.list_files(sly.TaskPaths.DATA_DIR)

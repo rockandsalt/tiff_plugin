@@ -3,7 +3,7 @@
         "title": "settings",
         "type": "import",
         "config": {
-            "axis": 0,
+            "axis": [0],
             "size": [256,256],
             "mode": "sliding_window",
             "overlap" : 10,
