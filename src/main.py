@@ -7,13 +7,15 @@ import supervisely_lib as sly
 
 import numpy as np
 from numpy import random
-import skimage as ski
 from skimage import io
+from skimage import color
+from skimage import exposure
 
 AXIS = 'axis'
 SIZE = 'size'
 MODE = 'mode'
 OVERLAP = 'overlap'
+SKIP = 'skip'
 NUMBER_SAMPLE = 'n_sample'
 
 DEFAULT_AXIS = [0]
@@ -31,7 +33,7 @@ def is_valid_ext(ext: str) -> bool:
 def has_valid_ext(path: str) -> bool:
     return is_valid_ext(os.path.splitext(path)[1])
 
-def sliding_window(im, size, overlap, axes):
+def sliding_window(im, size, overlap, axes, skip):
     shape = list(im.shape)
 
     ls_im = []
@@ -39,7 +41,7 @@ def sliding_window(im, size, overlap, axes):
     for axis in axes:
         t_shape = shape.copy()
         t_shape.pop(axis)
-        for i in range(shape[axis]):
+        for i in range(0, shape[axis], skip):
             sub_im = np.take(im, i, axis)
 
             for j in range(0, t_shape[0], size[0] - overlap):
@@ -57,7 +59,7 @@ def random_sampling(im, size, number, axes, seed = None):
 
     shape = list(im.shape)
 
-    for _ in number:
+    for _ in range(number):
         axis = random.choice(axes)
         t_shape = shape.copy()
         t_shape.pop(axis)
@@ -83,8 +85,8 @@ def convert_ct_im():
         sly.logger.warning('axis parameter not found. set to default: {}'.format(DEFAULT_MODE))
         mode = DEFAULT_MODE
 
-    axis = set(convert_options.get(AXIS, DEFAULT_AXIS))
-    size = set(convert_options.get(SIZE, DEFAULT_SIZE))
+    axis = list(convert_options.get(AXIS, DEFAULT_AXIS))
+    size = list(convert_options.get(SIZE, DEFAULT_SIZE))
 
     paths = sly.fs.list_files(sly.TaskPaths.DATA_DIR)
     tiff_paths = []
@@ -110,7 +112,8 @@ def convert_ct_im():
 
             if(mode == 'sliding_window'):
                 overlap = convert_options.get(OVERLAP, DEFAULT_OVERLAP)
-                ls_im = sliding_window(raw_image, size, overlap, axis)
+                skip_val = convert_options.get(SKIP, 1)
+                ls_im = sliding_window(raw_image, size, overlap, axis, skip_val)
             elif(mode == 'random'):
                 number_sample = convert_options.get(NUMBER_SAMPLE, DEFAULT_N_SAMPLE)
                 ls_im = random_sampling(raw_image, size, number_sample, axis)
@@ -119,8 +122,11 @@ def convert_ct_im():
 
             progress = sly.Progress('Import image: {}'.format(ds_name), len(ls_im))
             for frame_id, image in enumerate(ls_im):
+                rescaled_im = exposure.rescale_intensity(image, in_range='image', out_range=np.uint8)
+                rgb_im = color.gray2rgb(rescaled_im)
+
                 img_name = "frame_{:05d}".format(frame_id)
-                ds.add_item_np(img_name + '.png', image)
+                ds.add_item_np(img_name + '.png', rgb_im)
                 progress.iter_done_report()
 
         except Exception as e:
@@ -137,4 +143,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sly.main_wrapper('VIDEO_ONLY_IMPORT', main)
+    sly.main_wrapper('TIFF_ONLY_IMPORT', main)
